@@ -1,274 +1,76 @@
 package Catalyst::Plugin::Static::Simple;
-
 use Moose::Role;
-use File::stat;
-use File::Spec ();
-use IO::File ();
-use MIME::Types ();
-use MooseX::Types::Moose qw/ArrayRef Str/;
-use Catalyst::Utils;
 use namespace::autoclean;
 
-our $VERSION = '0.31';
+use Plack::App::File;
+use Catalyst::Utils;
 
-has _static_file => ( is => 'rw' );
-has _static_debug_message => ( is => 'rw', isa => ArrayRef[Str] );
+use Catalyst::Plugin::Static::Simple::Middleware;
 
-before prepare_action => sub {
-    my $c = shift;
-    my $path = $c->req->path;
-    my $config = $c->config->{'Plugin::Static::Simple'};
-
-    $path =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
-
-    # is the URI in a static-defined path?
-    foreach my $dir ( @{ $config->{dirs} } ) {
-        my $dir_re = quotemeta $dir;
-
-        # strip trailing slashes, they'll be added in our regex
-        $dir_re =~ s{/$}{};
-
-        my $re;
-
-        if ( $dir =~ m{^qr/}xms ) {
-            $re = eval $dir;
-
-            if ($@) {
-                $c->error( "Error compiling static dir regex '$dir': $@" );
-            }
-        }
-        else {
-            $re = qr{^${dir_re}/};
-        }
-
-        if ( $path =~ $re ) {
-            if ( $c->_locate_static_file( $path, 1 ) ) {
-                $c->_debug_msg( 'from static directory' )
-                    if $config->{debug};
-            } else {
-                $c->_debug_msg( "404: file not found: $path" )
-                    if $config->{debug};
-                $c->res->status( 404 );
-                $c->res->content_type( 'text/html' );
-            }
-        }
-    }
-
-    # Does the path have an extension?
-    if ( $path =~ /.*\.(\S{1,})$/xms ) {
-        # and does it exist?
-        $c->_locate_static_file( $path );
-    }
-};
-
-around dispatch => sub {
-    my $orig = shift;
-    my $c = shift;
-
-    return if ( $c->res->status != 200 );
-
-    if ( $c->_static_file ) {
-        if ( $c->config->{'Plugin::Static::Simple'}->{no_logs} && $c->log->can('abort') ) {
-           $c->log->abort( 1 );
-        }
-        return $c->_serve_static;
-    }
-    else {
-        return $c->$orig(@_);
-    }
-};
-
-before finalize => sub {
-    my $c = shift;
-
-    # display all log messages
-    if ( $c->config->{'Plugin::Static::Simple'}->{debug} && scalar @{$c->_debug_msg} ) {
-        $c->log->debug( 'Static::Simple: ' . join q{ }, @{$c->_debug_msg} );
-    }
-};
+our $VERSION = '0.32';
 
 before setup_finalize => sub {
-    my $c = shift;
+    my $app = shift;
 
-    $c->log->warn("Deprecated 'static' config key used, please use the key 'Plugin::Static::Simple' instead")
-        if exists $c->config->{static};
     my $config
-        = $c->config->{'Plugin::Static::Simple'}
-        = $c->config->{'static'}
+        = $app->config->{'Plugin::Static::Simple'}
+        = $app->config->{'static'}
         = Catalyst::Utils::merge_hashes(
-            $c->config->{'Plugin::Static::Simple'} || {},
-            $c->config->{static} || {}
+            $app->config->{'Plugin::Static::Simple'} || {},
+            $app->config->{static} || {}
         );
 
     $config->{dirs} ||= [];
-    $config->{include_path} ||= [ $c->config->{root} ];
-    $config->{mime_types} ||= {};
+    $config->{include_path} ||= [ $app->config->{root} ];
     $config->{ignore_extensions} ||= [ qw/tmpl tt tt2 html xhtml/ ];
     $config->{ignore_dirs} ||= [];
-    $config->{debug} ||= $c->debug;
-    $config->{no_logs} = 1 unless defined $config->{no_logs};
-    $config->{no_logs} = 0 if $config->{logging};
+    $config->{debug} ||= $app->debug;
 
-    # load up a MIME::Types object, only loading types with
-    # at least 1 file extension
-    $config->{mime_types_obj} = MIME::Types->new( only_complete => 1 );
+    my $static_middleware = Catalyst::Plugin::Static::Simple::Middleware->new({
+        config          => $config,
+        cat_app         => ref($app) || $app,
+        content_type    => $app->_build_content_type_callback,
+    });
+
+    $app->setup_middleware( $static_middleware );
 };
 
-# Search through all included directories for the static file
-# Based on Template Toolkit INCLUDE_PATH code
-sub _locate_static_file {
-    my ( $c, $path, $in_static_dir ) = @_;
-
-    $path = File::Spec->catdir(
-        File::Spec->no_upwards( File::Spec->splitdir( $path ) )
-    );
+sub _build_content_type_callback {
+    my ( $c ) = @_;
 
     my $config = $c->config->{'Plugin::Static::Simple'};
-    my @ipaths = @{ $config->{include_path} };
-    my $dpaths;
-    my $count = 64; # maximum number of directories to search
+    return sub {
+        my $full_path = shift;
+        my $mime_type;
 
-    DIR_CHECK:
-    while ( @ipaths && --$count) {
-        my $dir = shift @ipaths || next DIR_CHECK;
-
-        if ( ref $dir eq 'CODE' ) {
-            eval { $dpaths = &$dir( $c ) };
-            if ($@) {
-                $c->log->error( 'Static::Simple: include_path error: ' . $@ );
-            } else {
-                unshift @ipaths, @$dpaths;
-                next DIR_CHECK;
-            }
-        } else {
-            $dir =~ s/(\/|\\)$//xms;
-            if ( -d $dir && -f $dir . '/' . $path ) {
-
-                # Don't ignore any files in static dirs defined with 'dirs'
-                unless ( $in_static_dir ) {
-                    # do we need to ignore the file?
-                    for my $ignore ( @{ $config->{ignore_dirs} } ) {
-                        $ignore =~ s{(/|\\)$}{};
-                        if ( $path =~ /^$ignore(\/|\\)/ ) {
-                            $c->_debug_msg( "Ignoring directory `$ignore`" )
-                                if $config->{debug};
-                            next DIR_CHECK;
-                        }
-                    }
-
-                    # do we need to ignore based on extension?
-                    for my $ignore_ext ( @{ $config->{ignore_extensions} } ) {
-                        if ( $path =~ /.*\.${ignore_ext}$/ixms ) {
-                            $c->_debug_msg( "Ignoring extension `$ignore_ext`" )
-                                if $config->{debug};
-                            next DIR_CHECK;
-                        }
-                    }
-                }
-
-                $c->_debug_msg( 'Serving ' . $dir . '/' . $path )
-                    if $config->{debug};
-                return $c->_static_file( $dir . '/' . $path );
-            }
+        if ( $config->{mime_types} && $full_path =~ /.*\.(\S{1,})$/xms ) {
+            $mime_type = $config->{mime_types}->{ $1 };
         }
+
+        return $mime_type || Plack::MIME->mime_type($full_path) || 'text/plain';
     }
-
-    return;
-}
-
-sub _serve_static {
-    my $c = shift;
-    my $config = $c->config->{'Plugin::Static::Simple'};
-
-    my $full_path = shift || $c->_static_file;
-    my $type      = $c->_ext_to_type( $full_path );
-    my $stat      = stat $full_path;
-
-    $c->res->headers->content_type( $type );
-    $c->res->headers->content_length( $stat->size );
-    $c->res->headers->last_modified( $stat->mtime );
-    # Tell Firefox & friends its OK to cache, even over SSL:
-    $c->res->headers->header('Cache-control' => 'public');
-    # Optionally, set a fixed expiry time:
-    if ($config->{expires}) {
-        $c->res->headers->expires(time() + $config->{expires});
-    }
-
-    my $fh = IO::File->new( $full_path, 'r' );
-    if ( defined $fh ) {
-        binmode $fh;
-        $c->res->body( $fh );
-    }
-    else {
-        Catalyst::Exception->throw(
-            message => "Unable to open $full_path for reading" );
-    }
-
-    return 1;
 }
 
 sub serve_static_file {
     my ( $c, $full_path ) = @_;
 
-    my $config = $c->config->{'Plugin::Static::Simple'};
+    my $res;
 
-    if ( -e $full_path ) {
-        $c->_debug_msg( "Serving static file: $full_path" )
-            if $config->{debug};
-    }
-    else {
-        $c->_debug_msg( "404: file not found: $full_path" )
-            if $config->{debug};
-        $c->res->status( 404 );
-        $c->res->content_type( 'text/html' );
-        return;
+    if(! -f $full_path ) {
+        $res = Catalyst::Plugin::Static::Simple::Middleware->return_404;
+    } else {
+        my $file_app = Plack::App::File->new( {
+            file            => $full_path,
+            content_type    => $c->_build_content_type_callback
+        } );
+        $res = $file_app->call($c->req->env);
     }
 
-    $c->_serve_static( $full_path );
-}
-
-# looks up the correct MIME type for the current file extension
-sub _ext_to_type {
-    my ( $c, $full_path ) = @_;
-
-    my $config = $c->config->{'Plugin::Static::Simple'};
-
-    if ( $full_path =~ /.*\.(\S{1,})$/xms ) {
-        my $ext = $1;
-        my $type = $config->{mime_types}{$ext}
-            || $config->{mime_types_obj}->mimeTypeOf( $ext );
-        if ( $type ) {
-            $c->_debug_msg( "as $type" ) if $config->{debug};
-            return ( ref $type ) ? $type->type : $type;
-        }
-        else {
-            $c->_debug_msg( "as text/plain (unknown extension $ext)" )
-                if $config->{debug};
-            return 'text/plain';
-        }
-    }
-    else {
-        $c->_debug_msg( 'as text/plain (no extension)' )
-            if $config->{debug};
-        return 'text/plain';
-    }
-}
-
-sub _debug_msg {
-    my ( $c, $msg ) = @_;
-
-    if ( !defined $c->_static_debug_message ) {
-        $c->_static_debug_message( [] );
-    }
-
-    if ( $msg ) {
-        push @{ $c->_static_debug_message }, $msg;
-    }
-
-    return $c->_static_debug_message;
+    $c->res->from_psgi_response($res);
 }
 
 1;
+
 __END__
 
 =head1 NAME
