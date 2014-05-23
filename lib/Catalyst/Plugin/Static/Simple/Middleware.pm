@@ -17,7 +17,7 @@ sub call {
     my $return = eval {
         my ( $res, $c );
 
-        if(! $self->_check_static_simple_path( $env->{PATH_INFO} ) ) {
+        if(! $self->_check_static_simple_path( $env ) ) {
             return $self->app->($env)
         }
 
@@ -50,16 +50,20 @@ sub call {
         }
 
         if(! scalar ( @{$self->config->{dirs}})) {
-            $self->_debug( "Forwarding to Catalyst (or other middleware)." );
+            $self->_debug( "Forwarding to Catalyst (or other middleware).", $env );
             return $self->app->($env);
         }
 
-        $self->_debug( "404: file not found: " . $env->{PATH_INFO} );
+        $self->_debug( "404: file not found: " . $env->{PATH_INFO}, $env );
         return $self->return_404;
     };
 
     if ( $@ ) {
-        carp $@;
+        if($env->{'psgix.logger'} && ref($env->{'psgix.logger'}) eq 'CODE') {
+            $env->{'psgix.logger'}->({ level => 'error', message => $@ });
+        } else {
+            carp $@;
+        }
         return $self->return_500;
     }
 
@@ -67,11 +71,12 @@ sub call {
 }
 
 sub _check_static_simple_path {
-    my ( $self, $path ) = @_;
-
+    my ( $self, $env ) = @_;
+    my $path = $env->{PATH_INFO};
+    
     for my $ignore_ext ( @{ $self->config->{ignore_extensions} } ) {
         if ( $path =~ /.*\.${ignore_ext}$/ixms ) {
-            $self->_debug ( "Ignoring extension `$ignore_ext`" );
+            $self->_debug ( "Ignoring extension `$ignore_ext`", $env );
             return undef
         }
     }
@@ -80,7 +85,7 @@ sub _check_static_simple_path {
         $ignore =~ s{(/|\\)$}{};
 
         if ( $path =~ /^\/$ignore(\/|\\)/ ) {
-            $self->_debug( "Ignoring directory `$ignore`" );
+            $self->_debug( "Ignoring directory `$ignore`", $env );
             return undef;
         }
     }
@@ -126,8 +131,13 @@ sub _path_matches_dirs {
 }
 
 sub _debug {
-    my ( $self, $msg ) = @_;
-    warn "Static::Simple: $msg\n" if $self->config->{debug};
+    my ( $self, $msg, $env ) = @_;
+
+    if($env && $env->{'psgix.logger'} && ref($env->{'psgix.logger'}) eq 'CODE') {
+        $env->{'psgix.logger'}->({ level => 'error', message => $@ });
+    } else {
+        warn "Static::Simple: $msg\n" if $self->config->{debug};
+    }
 }
 
 sub return_404 {
