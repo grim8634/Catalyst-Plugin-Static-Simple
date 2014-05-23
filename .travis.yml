@@ -7,8 +7,10 @@ perl:
   - "5.10"
   - "5.8"
 before_install:
-  - cpanm -n Devel::Cover::Report::Coveralls CPAN::Meta
+  - cpanm -n Devel::Cover::Report::Coveralls CPAN::Meta Module::Install::AuthorRequires Module::Install::AuthorTests Test::NoTabs Test::Pod Test::Pod::Coverage
 before_script:
+  - export AUTHOR_TESTING=1
+  - export RELEASE_TESTING=1
   - perl Makefile.PL
   - cpanm --verbose -n --installdeps .
   - make manifest
