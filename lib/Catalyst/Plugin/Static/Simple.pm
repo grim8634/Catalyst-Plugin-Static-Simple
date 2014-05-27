@@ -406,6 +406,10 @@ Matt S Trout, <mst@shadowcat.co.uk>
 
 Toby Corkindale, <tjc@wintrmute.net>
 
+Graeme Lawton <cpan@per.ly>
+
+Mark Ellis <markellis@cpan.org>
+
 =head1 THANKS
 
 The authors of Catalyst::Plugin::Static:
