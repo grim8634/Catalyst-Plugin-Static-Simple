@@ -28,7 +28,6 @@ before setup_finalize => sub {
 
     my $static_middleware = Catalyst::Plugin::Static::Simple::Middleware->new({
         config          => $config,
-        cat_app         => ref($app) || $app,
         content_type    => $app->_build_content_type_callback,
     });
 
@@ -147,14 +146,6 @@ Configuration is completely optional and is specified within
 C<MyApp-E<gt>config-E<gt>{Plugin::Static::Simple}>.  If you use any of these options,
 this module will probably feel less "simple" to you!
 
-=head2 Enabling request logging
-
-Since Catalyst 5.50, logging of static requests is turned off by
-default; static requests tend to clutter the log output and rarely
-reveal anything useful. However, if you want to enable logging of static
-requests, you can do so by setting
-C<MyApp-E<gt>config-E<gt>{Plugin::Static::Simple}-E<gt>{logging}> to 1.
-
 =head2 Forcing directories into static mode
 
 Define a list of top-level directories beneath your 'root' directory
@@ -182,7 +173,6 @@ use C<MyApp-E<gt>config-E<gt>{root}> to add it.
         'Plugin::Static::Simple' => {
             include_path => [
                 '/path/to/overlay',
-                \&incpath_generator,
                 MyApp->config->{root},
             ],
         },
@@ -192,26 +182,7 @@ With the above setting, a request for the file C</images/logo.jpg> will search
 for the following files, returning the first one found:
 
     /path/to/overlay/images/logo.jpg
-    /dynamic/path/images/logo.jpg
     /your/app/home/root/images/logo.jpg
-
-The include path can contain a subroutine reference to dynamically return a
-list of available directories.  This method will receive the C<$c> object as a
-parameter and should return a reference to a list of directories.  Errors can
-be reported using C<die()>.  This method will be called every time a file is
-requested that appears to be a static file (i.e. it has an extension).
-
-For example:
-
-    sub incpath_generator {
-        my $c = shift;
-
-        if ( $c->session->{customer_dir} ) {
-            return [ $c->session->{customer_dir} ];
-        } else {
-            die "No customer dir defined.";
-        }
-    }
 
 =head2 Ignoring certain types of files
 
@@ -354,30 +325,6 @@ you need to  autogenerate them if they don't exist, or they are stored in a mode
         my $file_path = $c->user->picture_thumbnail_path;
         $c->serve_static_file($file_path);
     }
-
-=head1 INTERNAL EXTENDED METHODS
-
-Static::Simple extends the following steps in the Catalyst process.
-
-=head2 prepare_action
-
-C<prepare_action> is used to first check if the request path is a static
-file.  If so, we skip all other C<prepare_action> steps to improve
-performance.
-
-=head2 dispatch
-
-C<dispatch> takes the file found during C<prepare_action> and writes it
-to the output.
-
-=head2 finalize
-
-C<finalize> serves up final header information and displays any log
-messages.
-
-=head2 setup
-
-C<setup> initializes all default values.
 
 =head1 SEE ALSO
 

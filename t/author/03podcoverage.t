@@ -1,5 +1,5 @@
-use Test::More;
+use Test::More tests => 1;
 
 use Test::Pod::Coverage 1.04;
 
-all_pod_coverage_ok();
+pod_coverage_ok( "Catalyst::Plugin::Static::Simple" );

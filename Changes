@@ -1,5 +1,8 @@
 Revision history for Perl extension Catalyst::Plugin::Static::Simple
 
+        - Removed subref in the path support
+        - Fixed incorrect Content-Length header for 500 error
+
 0.32   2014-05-23 08:00:00
         - Complete rewrite to use Plack middleware.
 
